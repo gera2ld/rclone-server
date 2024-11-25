@@ -4,8 +4,11 @@ import (
 	_ "embed"
 	"encoding/json"
 	"io"
+	"log"
 	"os"
 )
+
+var DEBUG = os.Getenv("RCLONE_SERVER_DEBUG") != ""
 
 type AuthInput struct {
 	User      string `json:"user"`
@@ -24,7 +27,8 @@ type UserConfig struct {
 }
 
 func getAuthData() map[string]UserConfig {
-	auth_data, _ := os.ReadFile(os.Getenv("AUTH_DATA_FILE"))
+	auth_file := os.Getenv("AUTH_CONFIG")
+	auth_data, _ := os.ReadFile(auth_file)
 	var auth_data_map map[string]UserConfig
 	_ = json.Unmarshal([]byte(auth_data), &auth_data_map)
 	return auth_data_map
@@ -36,6 +40,10 @@ func main() {
 	json.Unmarshal(in_bytes, &auth_input)
 	auth_data_map := getAuthData()
 	user_config, matched := auth_data_map[auth_input.User]
+	if DEBUG {
+		log.Printf("auth input: %+v\n", auth_input)
+		log.Printf("user config: %+v\n", user_config)
+	}
 	if matched {
 		if auth_input.PublicKey != "" {
 			matched = false
@@ -51,6 +59,9 @@ func main() {
 			matched = false
 		}
 	}
+	if DEBUG {
+		log.Printf("matched: %+v\n", matched)
+	}
 	if matched {
 		data := map[string]string{}
 		data["user"] = auth_input.User
@@ -59,7 +70,11 @@ func main() {
 		data["_obscure"] = "pass"
 		data["_root"] = ""
 		for k, v := range user_config.Config {
-			data[k] = v
+			// Note that `true` should be passed as a string
+			data[k] = string(v)
+		}
+		if DEBUG {
+			log.Printf("final config: %+v\n", data)
 		}
 		bytes, _ := json.Marshal(data)
 		os.Stdout.WriteString(string(bytes))

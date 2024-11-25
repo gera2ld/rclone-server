@@ -1,12 +1,12 @@
 # rclone-server
 
-Create a file server with `rclone serve <protocol> --auth-proxy`.
+Create a file server (WebDAV, SFTP) with `rclone serve <protocol> --auth-proxy`.
 
 See [the documentation](https://rclone.org/commands/rclone_serve/) for more details.
 
 ## Usage
 
-Create `./data/auth_data.json`:
+Create `auth.json`:
 
 ```json
 {
@@ -32,6 +32,21 @@ Create `./data/auth_data.json`:
       "user": "gerald",
       "pass": "override-pass"
     }
+  },
+  "user3": {
+    "auth": {
+      "pass": "password3"
+    },
+    "config": {
+      "type": "s3",
+      "provider": "Other",
+      "access_key_id": "access_key_id",
+      "secret_access_key": "secret_access_key",
+      "endpoint": "https://s3.example.com",
+      "upload_cutoff": "50Mi",
+      "chunk_size": "50Mi",
+      "force_path_style": "true"
+    }
   }
 }
 ```
@@ -49,14 +64,22 @@ services:
     image: ghcr.io/gera2ld/rclone-server
     restart: unless-stopped
     volumes:
-      - ./data/auth_data.json:/auth_data.json:ro
+      - ./auth.json:/etc/auth.json:ro
       - ./path/to/my/files:/data/files
     environment:
-      # - PORT_WEBDAV=80
-      # - PORT_SFTP=22
+      # See below for available variables and their defaults.
     ports:
       - 8080:80
       - 8022:22
 ```
 
 Start service with `docker compose up -d`.
+
+## Environment Variables
+
+| Name                  | Default Value    |
+| --------------------- | ---------------- |
+| RCLONE_DIR_CACHE_TIME | `30s`            |
+| AUTH_CONFIG           | `/etc/auth.json` |
+| PORT_WEBDAV           | `80`             |
+| PORT_SFTP             | `22`             |
