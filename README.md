@@ -60,8 +60,9 @@ Create `compose.yml`:
 
 ```yaml
 services:
-  rclone:
+  rclone-server:
     image: ghcr.io/gera2ld/rclone-server
+    user: 1000:1000
     restart: unless-stopped
     volumes:
       - ./auth.json:/etc/auth.json:ro
