@@ -1,14 +1,28 @@
 package main
 
 import (
-	_ "embed"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"os"
+	"maps"
+	"slices"
+	"time"
 )
 
-var DEBUG = os.Getenv("RCLONE_SERVER_DEBUG") != ""
+var debug = os.Getenv("RCLONE_SERVER_DEBUG") != ""
+var logFile *os.File
+
+func debugLog(format string, args ...any) {
+	if !debug || logFile == nil {
+		return
+	}
+	msg := fmt.Sprintf(format, args...)
+	line := fmt.Sprintf("%s %s\n", time.Now().Format("15:04:05"), msg)
+	logFile.WriteString(line)
+	logFile.Sync()
+}
 
 type AuthInput struct {
 	User      string `json:"user"`
@@ -26,59 +40,99 @@ type UserConfig struct {
 	Config map[string]string `json:"config"`
 }
 
-func getAuthData() map[string]UserConfig {
-	auth_file := os.Getenv("AUTH_CONFIG")
-	auth_data, _ := os.ReadFile(auth_file)
-	var auth_data_map map[string]UserConfig
-	_ = json.Unmarshal([]byte(auth_data), &auth_data_map)
-	return auth_data_map
+func loadAuthData(path string) (map[string]UserConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading auth file: %w", err)
+	}
+	var authData map[string]UserConfig
+	if err := json.Unmarshal(data, &authData); err != nil {
+		return nil, fmt.Errorf("parsing auth file: %w", err)
+	}
+	return authData, nil
+}
+
+func lookupUser(input AuthInput, authData map[string]UserConfig) (UserConfig, bool) {
+	cfg, ok := authData[input.User]
+	return cfg, ok
+}
+
+func checkCredentials(input AuthInput, userAuth UserAuth) bool {
+	if input.PublicKey != "" {
+		return slices.Contains(userAuth.PublicKeys, input.PublicKey)
+	}
+	if input.Pass != "" {
+		return input.Pass == userAuth.Pass
+	}
+	return false
+}
+
+func buildOutput(input AuthInput, userConfig UserConfig) map[string]string {
+	output := map[string]string{
+		"user":       input.User,
+		"pass":       input.Pass,
+		"public_key": input.PublicKey,
+		"_obscure":   "pass",
+		"_root":      "",
+	}
+	maps.Copy(output, userConfig.Config)
+	return output
+}
+
+func authenticate(input AuthInput, authData map[string]UserConfig) (map[string]string, bool) {
+	userConfig, found := lookupUser(input, authData)
+	if !found {
+		debugLog("user %q not found in auth data", input.User)
+		return nil, false
+	}
+	if !checkCredentials(input, userConfig.Auth) {
+		debugLog("credentials mismatch for user %q (public_key=%q pass_provided=%v)", input.User, input.PublicKey, input.Pass != "")
+		return nil, false
+	}
+	return buildOutput(input, userConfig), true
 }
 
 func main() {
-	in_bytes, _ := io.ReadAll(os.Stdin)
-	var auth_input AuthInput
-	json.Unmarshal(in_bytes, &auth_input)
-	auth_data_map := getAuthData()
-	user_config, matched := auth_data_map[auth_input.User]
-	if DEBUG {
-		log.Printf("auth input: %+v\n", auth_input)
-		log.Printf("user config: %+v\n", user_config)
-	}
-	if matched {
-		if auth_input.PublicKey != "" {
-			matched = false
-			for _, publicKey := range user_config.Auth.PublicKeys {
-				if publicKey == auth_input.PublicKey {
-					matched = true
-					break
-				}
-			}
-		} else if auth_input.Pass != "" {
-			matched = auth_input.Pass == user_config.Auth.Pass
-		} else {
-			matched = false
+	if debug {
+		var err error
+		logFile, err = os.OpenFile("/tmp/auth_proxy.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			log.Fatalf("opening log file: %v", err)
 		}
+		defer logFile.Close()
 	}
-	if DEBUG {
-		log.Printf("matched: %+v\n", matched)
+
+	inBytes, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		debugLog("error reading stdin: %v", err)
+		log.Fatalf("reading stdin: %v", err)
 	}
-	if matched {
-		data := map[string]string{}
-		data["user"] = auth_input.User
-		data["pass"] = auth_input.Pass
-		data["public_key"] = auth_input.PublicKey
-		data["_obscure"] = "pass"
-		data["_root"] = ""
-		for k, v := range user_config.Config {
-			// Note that `true` should be passed as a string
-			data[k] = string(v)
-		}
-		if DEBUG {
-			log.Printf("final config: %+v\n", data)
-		}
-		bytes, _ := json.Marshal(data)
-		os.Stdout.WriteString(string(bytes))
-	} else {
+
+	var input AuthInput
+	if err := json.Unmarshal(inBytes, &input); err != nil {
+		debugLog("error parsing auth input: %v (raw: %s)", err, string(inBytes))
+		log.Fatalf("parsing auth input: %v", err)
+	}
+
+	authPath := os.Getenv("AUTH_CONFIG")
+	debugLog("auth input: %+v", input)
+	debugLog("auth config path: %s", authPath)
+
+	authData, err := loadAuthData(authPath)
+	if err != nil {
+		debugLog("error loading auth data: %v", err)
+		log.Fatalf("loading auth data: %v", err)
+	}
+	debugLog("loaded %d users from auth data", len(authData))
+
+	output, ok := authenticate(input, authData)
+	debugLog("matched: %v", ok)
+	if !ok {
 		os.Exit(1)
 	}
+
+	debugLog("final config: %+v", output)
+
+	bytes, _ := json.Marshal(output)
+	os.Stdout.Write(bytes)
 }
